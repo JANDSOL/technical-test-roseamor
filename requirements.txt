@@ -1,0 +1,5 @@
+setuptools==80.9.0
+pandas==2.1.4
+ydata-profiling==4.16.1
+great-expectations==1.3.10
+psycopg[binary]==3.2.6

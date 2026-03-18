@@ -1,0 +1,61 @@
+sku,category,cost,active
+SKU0001,Gift Box,6.94,True
+SKU0002,Seasonal,14.04,True
+SKU0003,Seasonal,12.75,False
+SKU0004,Seasonal,8.88,True
+SKU0005,Standard,11.72,True
+SKU0006,Gift Box,11.69,True
+SKU0007,Seasonal,10.88,True
+SKU0008,Gift Box,11.97,False
+SKU0009,Seasonal,18.4,True
+SKU0010,Seasonal,10.23,True
+SKU0011,Luxury,23.93,True
+SKU0012,Standard,23.24,True
+SKU0013,Luxury,14.1,True
+SKU0014,Premium,10.9,True
+SKU0015,Standard,15.24,True
+SKU0016,Standard,21.82,True
+SKU0017,Gift Box,17.7,True
+SKU0018,Luxury,20.89,False
+SKU0019,Luxury,15.19,True
+SKU0020,Gift Box,17.29,True
+SKU0021,Luxury,-6.94,True
+SKU0022,Gift Box,19.43,True
+SKU0023,Standard,8.25,True
+SKU0024,Seasonal,18.59,True
+SKU0025,Luxury,22.08,False
+SKU0026,Standard,6.77,True
+SKU0027,Seasonal,16.9,True
+SKU0028,Gift Box,6.0,True
+SKU0029,Standard,19.24,False
+SKU0030,Standard,5.77,True
+SKU0031,Standard,23.65,False
+SKU0032,Premium,6.89,True
+SKU0033,Standard,24.14,True
+SKU0034,Gift Box,-6.94,True
+SKU0035,Luxury,16.47,True
+SKU0036,,-6.94,True
+SKU0037,Gift Box,20.7,False
+SKU0038,Gift Box,23.87,True
+SKU0039,,9.32,True
+SKU0040,Standard,16.39,True
+SKU0041,Standard,6.0,False
+SKU0042,Gift Box,16.94,True
+SKU0043,Standard,7.6,True
+SKU0044,Standard,15.86,True
+SKU0045,Premium,16.02,False
+SKU0046,Seasonal,13.79,True
+SKU0047,Luxury,14.98,False
+SKU0048,Gift Box,20.04,True
+SKU0049,Luxury,20.78,True
+SKU0050,Standard,14.34,True
+SKU0051,Premium,16.59,False
+SKU0052,Standard,23.56,True
+SKU0053,Gift Box,6.51,True
+SKU0054,Standard,6.46,True
+SKU0055,Premium,5.84,True
+SKU0056,Seasonal,17.82,True
+SKU0057,Luxury,12.79,True
+SKU0058,Luxury,20.26,True
+SKU0059,Luxury,18.1,True
+SKU0060,Gift Box,11.01,True
