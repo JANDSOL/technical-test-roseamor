@@ -278,6 +278,10 @@ Or only the web service:
 make app
 ```
 
+Open the order app in your browser:
+
+- `http://localhost:8000/`
+
 Main endpoints:
 
 - `GET /`: HTML form to register an order
