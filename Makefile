@@ -1,10 +1,13 @@
-.PHONY: up down eda dq etl reset-db clean-docker
+.PHONY: up down app eda dq etl reset-db clean-docker
 
 up:
 	docker compose up -d --build
 
 down:
 	docker compose down
+
+app:
+	docker compose up -d --build web
 
 eda:
 	docker compose exec python python scripts/eda_console.py $(FLAGS)

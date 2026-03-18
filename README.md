@@ -6,7 +6,8 @@ This repository implements the data-analysis scope from [REQUIREMENTS.md](/home/
 
 Current implemented deliverables:
 
-- Docker Compose environment with one Python container and one PostgreSQL container
+- Docker Compose environment with one FastAPI container, one Python worker container, and one PostgreSQL container
+- FastAPI web app plus REST API to register orders in SQLite
 - `.env` for local secrets and `.env.example` for version control
 - PostgreSQL bootstrap with `raw`, `staging`, and `mart` schemas
 - Console EDA with `ydata-profiling` plus HTML profiling reports
@@ -15,7 +16,7 @@ Current implemented deliverables:
 - Star schema in `mart` for analytical consumption
 - Power BI artifacts in `dashboards/`
 
-Current repository scope is the analytical pipeline and BI layer. The simple web order-registration app described in `REQUIREMENTS.md` is not implemented in this repository yet.
+Current repository scope covers the analytical pipeline, BI assets, and a simple web app for order registration.
 
 ## Architecture
 
@@ -84,6 +85,9 @@ Expected cleaned outcomes:
 
 ```text
 .
+├── app/
+│   ├── __init__.py
+│   └── main.py
 ├── dashboards/
 │   ├── roseamor_dashboard.pbix
 │   └── roseamor_dashboard.pdf
@@ -122,13 +126,21 @@ Main analytical artifacts:
 
 ## Local Configuration
 
-1. Review `.env.example`.
-2. Create your local `.env`.
+1. Copy `.env.example` to `.env`.
+2. Review the values in `.env` and adjust them if needed.
 3. Keep `.env` local; it is ignored by git.
+
+Example:
+
+```bash
+cp .env.example .env
+```
 
 Example variables:
 
 ```env
+APP_PORT=8000
+APP_SQLITE_PATH=/app/app/orders_app.db
 POSTGRES_HOST=postgres
 POSTGRES_PORT=5432
 POSTGRES_DB=roseamor_dw
@@ -140,10 +152,11 @@ LOCAL_GID=1000
 
 ## Run The Environment
 
-Build and start the containers:
+First-time startup:
 
 ```bash
-docker compose up -d --build
+cp .env.example .env
+make up
 ```
 
 Check the service state:
@@ -156,6 +169,7 @@ Available shortcuts:
 
 ```bash
 make up
+make app
 make eda
 make dq
 make etl
@@ -166,18 +180,30 @@ make clean-docker
 What they do:
 
 - `make up`: build and start the containers
+- `make app`: build and start only the FastAPI web app service
 - `make eda`: run console EDA against PostgreSQL tables
 - `make dq`: run Great Expectations rules against PostgreSQL tables
 - `make etl`: run the incremental ETL with CDC behavior
 - `make reset-db`: recreate the PostgreSQL database from zero
 - `make clean-docker`: remove the project containers, volumes, and local images
 
+Important execution note:
+
+- `make app` starts only the `web` service
+- `make eda`, `make dq`, and `make etl` run inside the `python` service, so use `make up` first if you want the full project available
+
 Useful access commands:
 
 ```bash
 docker compose exec python bash
-psql -h localhost -p 5432 -U roseamor_user -d roseamor_dw
+docker compose exec postgres psql -U roseamor_user -d roseamor_dw
 ```
+
+FastAPI endpoints after startup:
+
+- app UI: `http://localhost:8000/`
+- Swagger docs: `http://localhost:8000/docs`
+- REST base path: `http://localhost:8000/api`
 
 ## Run EDA
 
@@ -235,6 +261,49 @@ docker compose exec python python scripts/data_quality.py --staging --mart
 Generated artifact:
 
 - [reports/great_expectations_results_db.json](/home/jpas/Projects/technical-test-roseamor/reports/great_expectations_results_db.json)
+
+## Run The Web App
+
+The FastAPI app exposes a simple order-registration screen and REST API.
+
+Start it with all services:
+
+```bash
+make up
+```
+
+Or only the web service:
+
+```bash
+make app
+```
+
+Main endpoints:
+
+- `GET /`: HTML form to register an order
+- `GET /docs`: Swagger UI
+- `GET /api/channels`: returns the allowed channel options from `data/orders.csv`
+- `GET /api/orders`: lists recent registered orders from SQLite
+- `POST /api/orders`: registers a new order
+
+Registration rules:
+
+- `order_id` is generated automatically in the same pattern as `orders.csv`, for example `O001516`
+- `order_date` is generated automatically on the server as a datetime
+- required fields: `customer_id`, `sku`, `quantity`, `unit_price`, `channel`
+- `customer_id` must match an existing value from `customers.csv`
+- `sku` must match an existing value from `products.csv`
+- `quantity` can be positive or negative, but it cannot be zero
+- `unit_price` must be zero or greater
+- `channel` is restricted to the options found in `data/orders.csv`, and Swagger shows them as a dropdown enum
+
+Stored data:
+
+- app registrations are persisted in the SQLite file `app/orders_app.db`
+- the table name inside SQLite is `orders_app`
+- the SQLite file is created automatically by the app at startup if it does not exist yet
+- the current ETL keeps the web-app data isolated from the CSV snapshot flow
+- this SQLite file is not deleted by `make reset-db` because that command only recreates PostgreSQL
 
 ## Run ETL
 
@@ -310,6 +379,11 @@ make reset-db
 
 This command removes the database volume and starts PostgreSQL again so the init SQL runs from a clean state.
 
+Important:
+
+- `make reset-db` resets PostgreSQL only
+- it does not delete the app SQLite file `app/orders_app.db`
+
 ## Clean Docker Environment
 
 To remove the project Docker containers, volumes, and local images:
@@ -317,3 +391,8 @@ To remove the project Docker containers, volumes, and local images:
 ```bash
 make clean-docker
 ```
+
+Important:
+
+- `make clean-docker` removes Docker resources only
+- it does not delete the local SQLite file `app/orders_app.db`

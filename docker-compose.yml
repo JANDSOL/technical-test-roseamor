@@ -1,4 +1,20 @@
 services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    env_file:
+      - .env
+    environment:
+      HOME: /tmp
+    working_dir: /app
+    volumes:
+      - ./:/app
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
   python:
     build:
       context: .

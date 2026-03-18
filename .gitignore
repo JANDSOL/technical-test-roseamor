@@ -153,6 +153,9 @@ venv.bak/
 # Project runtime artifacts
 reports/*.html
 reports/*.json
+app/*.db
+app/*.sqlite
+app/*.sqlite3
 
 # mypy
 .mypy_cache/
