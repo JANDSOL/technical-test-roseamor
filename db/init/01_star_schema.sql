@@ -27,6 +27,18 @@ CREATE TABLE IF NOT EXISTS raw.orders_raw (
     ingested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS raw.orders_app_raw (
+    order_id TEXT,
+    customer_id TEXT,
+    sku TEXT,
+    quantity TEXT,
+    unit_price TEXT,
+    order_date TEXT,
+    channel TEXT,
+    source_occurrence INTEGER NOT NULL DEFAULT 1,
+    ingested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 DROP TABLE IF EXISTS staging.orders_clean CASCADE;
 DROP TABLE IF EXISTS staging.products_clean CASCADE;
 DROP TABLE IF EXISTS staging.customers_clean CASCADE;
@@ -68,6 +80,7 @@ CREATE TABLE staging.orders_clean (
     unit_price NUMERIC(12, 2) NOT NULL CHECK (unit_price >= 0),
     order_date TIMESTAMP NOT NULL,
     channel TEXT NOT NULL,
+    source_system_code TEXT NOT NULL,
     staged_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

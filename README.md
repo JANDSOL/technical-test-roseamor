@@ -22,7 +22,7 @@ Current repository scope covers the analytical pipeline, BI assets, and a simple
 
 Target flow:
 
-`CSV files -> raw schema -> staging quality layer -> mart star schema -> BI consumption`
+`CSV files + SQLite app orders -> raw schema -> staging quality layer -> mart star schema -> BI consumption`
 
 Database layers:
 
@@ -36,7 +36,12 @@ Staging tables:
 
 - `staging.customers_clean`
 - `staging.products_clean`
-- `staging.orders_clean`
+- `staging.orders_clean`: includes `source_system_code` to identify file vs web origin
+
+Raw order tables:
+
+- `raw.orders_raw`: file-origin orders from `data/orders.csv`
+- `raw.orders_app_raw`: web-app orders from `app/orders_app.db`
 
 Mart tables:
 
@@ -180,7 +185,7 @@ make clean-docker
 What they do:
 
 - `make up`: build and start the containers
-- `make app`: build and start only the FastAPI web app service
+- `make app`: build and start the FastAPI web app plus its PostgreSQL dependency
 - `make eda`: run console EDA against PostgreSQL tables
 - `make dq`: run Great Expectations rules against PostgreSQL tables
 - `make etl`: run the incremental ETL with CDC behavior
@@ -189,7 +194,7 @@ What they do:
 
 Important execution note:
 
-- `make app` starts only the `web` service
+- `make app` starts the `web` service and PostgreSQL because order registration now syncs the warehouse in real time
 - `make eda`, `make dq`, and `make etl` run inside the `python` service, so use `make up` first if you want the full project available
 
 Useful access commands:
@@ -272,7 +277,7 @@ Start it with all services:
 make up
 ```
 
-Or only the web service:
+Or only the app and PostgreSQL:
 
 ```bash
 make app
@@ -306,27 +311,30 @@ Stored data:
 - app registrations are persisted in the SQLite file `app/orders_app.db`
 - the table name inside SQLite is `orders_app`
 - the SQLite file is created automatically by the app at startup if it does not exist yet
-- the current ETL keeps the web-app data isolated from the CSV snapshot flow
+- each successful app registration is synced immediately into PostgreSQL `raw`, `staging`, and `mart`
+- `make etl` also reads the SQLite file and keeps previously registered app orders inside the warehouse flow
 - this SQLite file is not deleted by `make reset-db` because that command only recreates PostgreSQL
 
 ## Run ETL
 
 This is the only ETL entry point. It executes the complete flow:
 
-`CSV files -> raw -> staging -> mart`
+`CSV files + app/orders_app.db -> raw -> staging -> mart`
 
 Applied logic by layer:
 
-- `raw`: loads the source files without remediation
+- `raw.orders_raw`: loads the CSV snapshot without remediation
+- `raw.orders_app_raw`: loads the SQLite app orders without remediation
 - `staging.customers_clean`: trims fields, standardizes IDs, imputes missing `country` and `segment` as `Unknown`, and types `customer_created_at`
 - `staging.products_clean`: trims fields, standardizes `sku`, imputes missing `category` as `Unknown`, parses booleans, and converts negative `cost` values with `abs()`
-- `staging.orders_clean`: standardizes IDs and channel format, removes exact duplicate rows, drops rows with missing required business keys, drops invalid `unit_price`, drops invalid `order_date`, and keeps negative `quantity` as returns through `is_return`
+- `staging.orders_clean`: unions file and web raw orders, tags each row with `source_system_code`, standardizes IDs and channel format, removes exact duplicate rows, drops rows with missing required business keys, drops invalid `unit_price`, drops invalid `order_date`, and keeps negative `quantity` as returns through `is_return`
 - `mart`: loads dimensions and fact table only from conformed staging data
 
 CDC behavior:
 
 - first load: inserts the initial snapshot
 - later loads: applies `insert`, `update`, and `delete` against the current warehouse state
+- API-created orders trigger the same CDC sync immediately after each successful registration
 
 Run it with:
 

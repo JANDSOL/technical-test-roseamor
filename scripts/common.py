@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import sqlite3
 
 import pandas as pd
 import psycopg
@@ -11,6 +12,19 @@ from psycopg import sql
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
 REPORTS_DIR = ROOT_DIR / "reports"
+APP_DIR = ROOT_DIR / "app"
+APP_SQLITE_PATH = Path(os.getenv("APP_SQLITE_PATH", str(APP_DIR / "orders_app.db")))
+APP_ORDER_COLUMNS = [
+    "order_id",
+    "customer_id",
+    "sku",
+    "quantity",
+    "unit_price",
+    "order_date",
+    "channel",
+]
+SOURCE_SYSTEM_FILE = "FILE"
+SOURCE_SYSTEM_WEB = "WEB"
 
 DATASETS = {
     "customers": {
@@ -61,6 +75,40 @@ def load_dataframe(name: str) -> pd.DataFrame:
 def ensure_reports_dir() -> Path:
     REPORTS_DIR.mkdir(exist_ok=True)
     return REPORTS_DIR
+
+
+def load_app_orders_dataframe(extra_orders: pd.DataFrame | None = None) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+
+    if APP_SQLITE_PATH.exists():
+        with sqlite3.connect(APP_SQLITE_PATH) as connection:
+            table_exists = connection.execute(
+                """
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'orders_app';
+                """
+            ).fetchone()
+
+            if table_exists:
+                frames.append(
+                    pd.read_sql_query(
+                        """
+                        SELECT order_id, customer_id, sku, quantity, unit_price, order_date, channel
+                        FROM orders_app;
+                        """,
+                        connection,
+                    )
+                )
+
+    if extra_orders is not None and not extra_orders.empty:
+        frames.append(extra_orders[APP_ORDER_COLUMNS].copy())
+
+    if not frames:
+        return pd.DataFrame(columns=APP_ORDER_COLUMNS)
+
+    combined = pd.concat(frames, ignore_index=True)
+    return combined.reindex(columns=APP_ORDER_COLUMNS)
 
 
 def get_postgres_connection():

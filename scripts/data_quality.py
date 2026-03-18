@@ -13,7 +13,14 @@ os.environ.setdefault("TQDM_DISABLE", "1")
 import great_expectations as gx
 import pandas as pd
 
-from common import ensure_reports_dir, get_postgres_connection, list_schema_tables, load_table_dataframe
+from common import (
+    SOURCE_SYSTEM_FILE,
+    SOURCE_SYSTEM_WEB,
+    ensure_reports_dir,
+    get_postgres_connection,
+    list_schema_tables,
+    load_table_dataframe,
+)
 
 
 warnings.filterwarnings(
@@ -26,6 +33,7 @@ warnings.filterwarnings(
 DEFAULT_SCHEMAS = ["raw", "staging", "mart"]
 ALLOWED_SEGMENTS = ["Wholesale", "Corporate", "Distributor", "E-commerce", "Retail", "Unknown"]
 ALLOWED_CHANNELS = ["ecommerce", "retail", "wholesale", "export"]
+ALLOWED_SOURCE_SYSTEM_CODES = [SOURCE_SYSTEM_FILE, SOURCE_SYSTEM_WEB]
 
 
 def divider(title: str) -> None:
@@ -132,7 +140,7 @@ def prepare_validation_frame(schema: str, table: str, dataframe: pd.DataFrame) -
     elif (schema, table) == ("raw", "products_raw"):
         working["cost_numeric"] = pd.to_numeric(working["cost"], errors="coerce")
         working["active_bool"] = working["active"].astype("string").str.lower().map({"true": True, "false": False})
-    elif (schema, table) == ("raw", "orders_raw"):
+    elif (schema, table) in {("raw", "orders_raw"), ("raw", "orders_app_raw")}:
         working["quantity_numeric"] = pd.to_numeric(working["quantity"], errors="coerce")
         working["unit_price_numeric"] = pd.to_numeric(working["unit_price"], errors="coerce")
         working["order_date_parsed"] = pd.to_datetime(working["order_date"], errors="coerce")
@@ -146,7 +154,7 @@ def prepare_validation_frame(schema: str, table: str, dataframe: pd.DataFrame) -
             | ((working["is_return"] == False) & (working["quantity"] > 0))
         )
         working["business_key_unique"] = ~working.duplicated(
-            subset=["order_id", "customer_id", "sku", "order_date", "channel"],
+            subset=["order_id", "customer_id", "sku", "order_date", "channel", "source_system_code"],
             keep=False,
         )
     elif (schema, table) == ("mart", "fact_order_line"):
@@ -209,7 +217,7 @@ def build_table_expectations(
             "cost is non-negative": (source_dataframe, "cost"),
             "active contains booleans": (source_dataframe, "active"),
         }
-    elif (schema, table) == ("raw", "orders_raw"):
+    elif (schema, table) in {("raw", "orders_raw"), ("raw", "orders_app_raw")}:
         expectations = [
             ("order_id is not null", lambda: validator.expect_column_values_to_not_be_null("order_id", result_format="SUMMARY")),
             ("order_id matches O######", lambda: validator.expect_column_values_to_match_regex("order_id", r"^O\d{6}$", result_format="SUMMARY")),
@@ -251,6 +259,7 @@ def build_table_expectations(
             ("quantity is non-zero", lambda: validator.expect_column_values_to_not_be_null("quantity", result_format="SUMMARY")),
             ("unit_price is non-negative", lambda: validator.expect_column_values_to_be_between("unit_price", min_value=0, result_format="SUMMARY")),
             ("channel is valid", lambda: validator.expect_column_values_to_be_in_set("channel", ALLOWED_CHANNELS, result_format="SUMMARY")),
+            ("source_system_code is valid", lambda: validator.expect_column_values_to_be_in_set("source_system_code", ALLOWED_SOURCE_SYSTEM_CODES, result_format="SUMMARY")),
             ("return flag is consistent", lambda: validator.expect_column_values_to_be_in_set("return_consistent", [True], result_format="SUMMARY")),
             ("business key is unique", lambda: validator.expect_column_values_to_be_in_set("business_key_unique", [True], result_format="SUMMARY")),
         ]
@@ -312,7 +321,11 @@ def main() -> None:
     print(f"Inspecting schemas: {', '.join(schemas)}")
 
     with get_postgres_connection() as connection:
-        tables = list_schema_tables(connection, schemas)
+        schema_order = {schema: index for index, schema in enumerate(schemas)}
+        tables = sorted(
+            list_schema_tables(connection, schemas),
+            key=lambda item: (schema_order.get(item[0], len(schema_order)), item[1]),
+        )
         if not tables:
             print("No tables found for the selected schemas.")
             return

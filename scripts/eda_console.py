@@ -145,7 +145,11 @@ def main() -> None:
     print(f"Inspecting schemas: {', '.join(schemas)}")
 
     with get_postgres_connection() as connection:
-        tables = list_schema_tables(connection, schemas)
+        schema_order = {schema: index for index, schema in enumerate(schemas)}
+        tables = sorted(
+            list_schema_tables(connection, schemas),
+            key=lambda item: (schema_order.get(item[0], len(schema_order)), item[1]),
+        )
         if not tables:
             print("No tables found for the selected schemas.")
             return

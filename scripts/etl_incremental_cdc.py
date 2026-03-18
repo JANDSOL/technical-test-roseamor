@@ -1,17 +1,35 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
 
-from common import REPORTS_DIR, get_postgres_connection
+try:
+    from common import (
+        REPORTS_DIR,
+        SOURCE_SYSTEM_FILE,
+        SOURCE_SYSTEM_WEB,
+        get_postgres_connection,
+        load_app_orders_dataframe,
+    )
+except ModuleNotFoundError:
+    from scripts.common import (
+        REPORTS_DIR,
+        SOURCE_SYSTEM_FILE,
+        SOURCE_SYSTEM_WEB,
+        get_postgres_connection,
+        load_app_orders_dataframe,
+    )
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-QUALITY_RESULTS_PATH = REPORTS_DIR / "great_expectations_results.json"
+QUALITY_RESULTS_PATH = REPORTS_DIR / "great_expectations_results_db.json"
+LEGACY_QUALITY_RESULTS_PATH = REPORTS_DIR / "great_expectations_results.json"
+NUMERIC_TEXT_PATTERN = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
 
 CHANNEL_NAME_MAP = {
     "ecommerce": "E-commerce",
@@ -24,6 +42,7 @@ ALLOWED_CHANNELS = set(CHANNEL_NAME_MAP)
 
 RAW_CUSTOMER_COLUMNS = ["customer_id", "name", "country", "segment", "created_at"]
 RAW_PRODUCT_COLUMNS = ["sku", "category", "cost", "active"]
+ORDER_SOURCE_COLUMNS = ["order_id", "customer_id", "sku", "quantity", "unit_price", "order_date", "channel"]
 RAW_ORDER_COLUMNS = [
     "order_id",
     "customer_id",
@@ -34,6 +53,24 @@ RAW_ORDER_COLUMNS = [
     "channel",
     "source_occurrence",
 ]
+RAW_ORDER_KEY_COLUMNS = ["order_id", "customer_id", "sku", "order_date", "channel", "source_occurrence"]
+STAGE_ORDER_COLUMNS = [
+    "order_id",
+    "customer_id",
+    "sku",
+    "quantity",
+    "is_return",
+    "unit_price",
+    "order_date",
+    "channel",
+    "source_system_code",
+]
+STAGE_ORDER_KEY_COLUMNS = ["order_id", "customer_id", "sku", "order_date", "channel", "source_system_code"]
+MART_ORDER_DEDUP_COLUMNS = ["order_id", "customer_id", "sku", "order_date", "channel"]
+SOURCE_SYSTEM_PRIORITY = {
+    SOURCE_SYSTEM_WEB: 0,
+    SOURCE_SYSTEM_FILE: 1,
+}
 
 
 def divider(title: str) -> None:
@@ -72,12 +109,14 @@ def to_python_datetime(value):
     return value.to_pydatetime()
 
 
-def load_quality_context() -> dict:
-    if not QUALITY_RESULTS_PATH.exists():
-        print(f"Quality results file not found: {QUALITY_RESULTS_PATH}")
+def load_quality_context(verbose: bool = True) -> dict:
+    quality_results_path = QUALITY_RESULTS_PATH if QUALITY_RESULTS_PATH.exists() else LEGACY_QUALITY_RESULTS_PATH
+    if not quality_results_path.exists():
+        if verbose:
+            print(f"Quality results file not found: {QUALITY_RESULTS_PATH}")
         return {}
 
-    payload = json.loads(QUALITY_RESULTS_PATH.read_text(encoding="utf-8"))
+    payload = json.loads(quality_results_path.read_text(encoding="utf-8"))
     customers = {result["rule"]: result for result in payload.get("customers", [])}
     products = {result["rule"]: result for result in payload.get("products", [])}
     orders = {result["rule"]: result for result in payload.get("orders", [])}
@@ -91,23 +130,34 @@ def load_quality_context() -> dict:
         "order_negative_quantity": orders.get("quantity is greater than zero", {}).get("result", {}).get("unexpected_count", 0),
     }
 
-    print(
-        "Reviewed Great Expectations results: "
-        f"customer_country_nulls={context['customer_country_nulls']} | "
-        f"product_negative_costs={context['product_negative_costs']} | "
-        f"order_duplicate_ids={context['order_duplicate_ids']} | "
-        f"order_missing_unit_price={context['order_missing_unit_price']} | "
-        f"order_invalid_date={context['order_invalid_date']} | "
-        f"order_negative_quantity={context['order_negative_quantity']}"
-    )
+    if verbose:
+        print(
+            "Reviewed Great Expectations results: "
+            f"customer_country_nulls={context['customer_country_nulls']} | "
+            f"product_negative_costs={context['product_negative_costs']} | "
+            f"order_duplicate_ids={context['order_duplicate_ids']} | "
+            f"order_missing_unit_price={context['order_missing_unit_price']} | "
+            f"order_invalid_date={context['order_invalid_date']} | "
+            f"order_negative_quantity={context['order_negative_quantity']}"
+        )
     return context
 
 
-def load_sources() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def build_additional_orders_dataframe(additional_order_rows: list[dict[str, object]] | None) -> pd.DataFrame | None:
+    if not additional_order_rows:
+        return None
+    dataframe = pd.DataFrame(additional_order_rows)
+    return dataframe.reindex(columns=ORDER_SOURCE_COLUMNS)
+
+
+def load_sources(
+    additional_orders: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     customers = pd.read_csv(ROOT_DIR / "data" / "customers.csv", dtype="string")
     products = pd.read_csv(ROOT_DIR / "data" / "products.csv", dtype="string")
-    orders = pd.read_csv(ROOT_DIR / "data" / "orders.csv", dtype="string")
-    return customers, products, orders
+    file_orders = pd.read_csv(ROOT_DIR / "data" / "orders.csv", dtype="string")
+    app_orders = load_app_orders_dataframe(additional_orders)
+    return customers, products, file_orders, app_orders
 
 
 def sql_value(value):
@@ -121,6 +171,21 @@ def sql_value(value):
 def canonicalize(value):
     if value is None or pd.isna(value):
         return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text).replace(tzinfo=None, microsecond=0).isoformat(sep=" ")
+        except ValueError:
+            pass
+        try:
+            return date.fromisoformat(text).isoformat()
+        except ValueError:
+            pass
+        if NUMERIC_TEXT_PATTERN.fullmatch(text):
+            return round(float(text), 6)
+        return text
     if isinstance(value, pd.Timestamp):
         value = value.to_pydatetime()
     if isinstance(value, datetime):
@@ -255,10 +320,10 @@ def delete_missing_rows(connection, table_name: str, desired_df: pd.DataFrame, k
         return apply_delete(cursor, table_name, delete_df, key_columns)
 
 
-def backfill_raw_order_occurrence(connection) -> None:
+def backfill_raw_order_occurrence(connection, table_name: str) -> None:
     with connection.cursor() as cursor:
         cursor.execute(
-            """
+            f"""
             WITH ranked AS (
                 SELECT
                     ctid,
@@ -266,9 +331,9 @@ def backfill_raw_order_occurrence(connection) -> None:
                         PARTITION BY order_id, customer_id, sku, quantity, unit_price, order_date, channel
                         ORDER BY ingested_at, ctid
                     ) AS occurrence_rank
-                FROM raw.orders_raw
+                FROM {table_name}
             )
-            UPDATE raw.orders_raw AS target
+            UPDATE {table_name} AS target
             SET source_occurrence = ranked.occurrence_rank
             FROM ranked
             WHERE target.ctid = ranked.ctid;
@@ -392,8 +457,34 @@ def prepare_products_stage(products: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     return staged, stats
 
 
-def prepare_orders_stage(orders: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    staged = orders.copy()
+def prepare_orders_stage(file_orders: pd.DataFrame, app_orders: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    source_frames: list[pd.DataFrame] = []
+
+    if not file_orders.empty:
+        file_frame = file_orders[ORDER_SOURCE_COLUMNS].copy()
+        file_frame["source_system_code"] = SOURCE_SYSTEM_FILE
+        source_frames.append(file_frame)
+
+    if not app_orders.empty:
+        app_frame = app_orders[ORDER_SOURCE_COLUMNS].copy()
+        app_frame["source_system_code"] = SOURCE_SYSTEM_WEB
+        source_frames.append(app_frame)
+
+    if not source_frames:
+        empty = pd.DataFrame(columns=STAGE_ORDER_COLUMNS)
+        stats = {
+            "exact_duplicates_removed": 0,
+            "dropped_missing_keys": 0,
+            "dropped_invalid_channel": 0,
+            "dropped_invalid_quantity": 0,
+            "dropped_invalid_unit_price": 0,
+            "dropped_invalid_order_date": 0,
+            "return_rows": 0,
+            "rows": 0,
+        }
+        return empty, stats
+
+    staged = pd.concat(source_frames, ignore_index=True)
     staged["order_id"] = staged["order_id"].map(normalize_upper)
     staged["customer_id"] = staged["customer_id"].map(normalize_upper)
     staged["sku"] = staged["sku"].map(normalize_upper)
@@ -401,10 +492,20 @@ def prepare_orders_stage(orders: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     staged["quantity"] = staged["quantity"].map(normalize_text)
     staged["unit_price"] = staged["unit_price"].map(normalize_text)
     staged["order_date"] = staged["order_date"].map(normalize_text)
+    staged["source_system_code"] = staged["source_system_code"].map(normalize_text)
+    staged["source_priority"] = staged["source_system_code"].map(
+        lambda value: SOURCE_SYSTEM_PRIORITY.get(value, len(SOURCE_SYSTEM_PRIORITY))
+    )
 
     before = len(staged)
+    staged = staged.sort_values(
+        by=["source_priority", "order_date"],
+        ascending=[True, True],
+        na_position="last",
+        kind="stable",
+    )
     staged = staged.drop_duplicates(
-        subset=["order_id", "customer_id", "sku", "quantity", "unit_price", "order_date", "channel"],
+        subset=["order_id", "customer_id", "sku", "quantity", "unit_price", "order_date", "channel", "source_system_code"],
         keep="first",
     ).copy()
     exact_duplicates_removed = before - len(staged)
@@ -449,6 +550,7 @@ def prepare_orders_stage(orders: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             "unit_price_numeric",
             "order_date_ts",
             "channel",
+            "source_system_code",
         ]
     ].rename(
         columns={
@@ -486,7 +588,7 @@ def build_raw_products_df(products_source: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_raw_orders_df(orders_source: pd.DataFrame) -> pd.DataFrame:
-    raw = orders_source.copy()
+    raw = orders_source[ORDER_SOURCE_COLUMNS].copy()
     raw["order_id"] = raw["order_id"].map(normalize_upper)
     raw["customer_id"] = raw["customer_id"].map(normalize_upper)
     raw["sku"] = raw["sku"].map(normalize_upper)
@@ -527,18 +629,7 @@ def build_stage_product_df(stage_products: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_stage_order_df(stage_orders: pd.DataFrame) -> pd.DataFrame:
-    return stage_orders[
-        [
-            "order_id",
-            "customer_id",
-            "sku",
-            "quantity",
-            "is_return",
-            "unit_price",
-            "order_date",
-            "channel",
-        ]
-    ].copy()
+    return stage_orders[STAGE_ORDER_COLUMNS].copy()
 
 
 def build_dim_customer_df(stage_customers: pd.DataFrame) -> pd.DataFrame:
@@ -664,10 +755,27 @@ def build_fact_df(
     stage_orders: pd.DataFrame,
     stage_products: pd.DataFrame,
 ) -> tuple[pd.DataFrame, dict]:
+    stage_orders_for_mart = (
+        stage_orders.assign(
+            source_priority=stage_orders["source_system_code"].map(
+                lambda value: SOURCE_SYSTEM_PRIORITY.get(value, len(SOURCE_SYSTEM_PRIORITY))
+            )
+        )
+        .sort_values(
+            by=["source_priority", "order_date"],
+            ascending=[True, True],
+            na_position="last",
+            kind="stable",
+        )
+        .drop_duplicates(subset=MART_ORDER_DEDUP_COLUMNS, keep="first")
+        .drop(columns=["source_priority"])
+        .reset_index(drop=True)
+    )
+
     customer_map, product_map, channel_map = fetch_dimension_maps(connection)
     desired_customer_ids = set(stage_customers["customer_id"].tolist())
     desired_product_skus = set(stage_products["sku"].tolist())
-    desired_channel_codes = set(stage_orders["channel"].tolist())
+    desired_channel_codes = set(stage_orders_for_mart["channel"].tolist())
 
     customer_map = {
         customer_id: customer_key
@@ -686,7 +794,7 @@ def build_fact_df(
     }
 
     fact_rows, fact_stats = build_fact_rows(
-        stage_orders=stage_orders,
+        stage_orders=stage_orders_for_mart,
         stage_products=stage_products,
         customer_map=customer_map,
         product_map=product_map,
@@ -761,18 +869,24 @@ def print_cdc_layer(title: str, stats_by_table: dict[str, dict]) -> None:
         print(f"- {line}")
 
 
-def main() -> None:
-    divider("INCREMENTAL CDC ETL")
-    quality_context = load_quality_context()
-    customers_source, products_source, orders_source = load_sources()
+def run_incremental_cdc(
+    additional_order_rows: list[dict[str, object]] | None = None,
+    verbose: bool = True,
+) -> dict:
+    if verbose:
+        divider("INCREMENTAL CDC ETL")
+    quality_context = load_quality_context(verbose=verbose)
+    additional_orders_df = build_additional_orders_dataframe(additional_order_rows)
+    customers_source, products_source, file_orders_source, app_orders_source = load_sources(additional_orders_df)
 
     raw_customers_df = build_raw_customers_df(customers_source)
     raw_products_df = build_raw_products_df(products_source)
-    raw_orders_df = build_raw_orders_df(orders_source)
+    raw_orders_df = build_raw_orders_df(file_orders_source)
+    raw_app_orders_df = build_raw_orders_df(app_orders_source)
 
     stage_customers, customer_stats = prepare_customers_stage(customers_source)
     stage_products, product_stats = prepare_products_stage(products_source)
-    stage_orders, order_stats = prepare_orders_stage(orders_source)
+    stage_orders, order_stats = prepare_orders_stage(file_orders_source, app_orders_source)
 
     stage_customers_df = build_stage_customer_df(stage_customers)
     stage_products_df = build_stage_product_df(stage_products)
@@ -787,11 +901,110 @@ def main() -> None:
         with connection.cursor() as cursor:
             cursor.execute(
                 """
+                CREATE TABLE IF NOT EXISTS raw.orders_app_raw (
+                    order_id TEXT,
+                    customer_id TEXT,
+                    sku TEXT,
+                    quantity TEXT,
+                    unit_price TEXT,
+                    order_date TEXT,
+                    channel TEXT,
+                    source_occurrence INTEGER NOT NULL DEFAULT 1,
+                    ingested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            cursor.execute(
+                """
                 ALTER TABLE raw.orders_raw
                 ADD COLUMN IF NOT EXISTS source_occurrence INTEGER NOT NULL DEFAULT 1;
                 """
             )
-        backfill_raw_order_occurrence(connection)
+            cursor.execute(
+                """
+                ALTER TABLE raw.orders_app_raw
+                ADD COLUMN IF NOT EXISTS source_occurrence INTEGER NOT NULL DEFAULT 1;
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE raw.orders_app_raw
+                ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMP;
+                """
+            )
+            cursor.execute(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = 'raw'
+                          AND table_name = 'orders_app_raw'
+                          AND column_name = 'created_at'
+                    ) THEN
+                        EXECUTE '
+                            UPDATE raw.orders_app_raw
+                            SET ingested_at = created_at
+                            WHERE ingested_at IS NULL
+                        ';
+                    END IF;
+                END $$;
+                """
+            )
+            cursor.execute(
+                """
+                UPDATE raw.orders_app_raw
+                SET ingested_at = CURRENT_TIMESTAMP
+                WHERE ingested_at IS NULL;
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE raw.orders_app_raw
+                ALTER COLUMN ingested_at SET DEFAULT CURRENT_TIMESTAMP;
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE raw.orders_app_raw
+                ALTER COLUMN ingested_at SET NOT NULL;
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE raw.orders_app_raw
+                DROP CONSTRAINT IF EXISTS orders_app_raw_quantity_check;
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE raw.orders_app_raw
+                DROP CONSTRAINT IF EXISTS orders_app_raw_order_id_key;
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE staging.orders_clean
+                ADD COLUMN IF NOT EXISTS source_system_code TEXT;
+                """
+            )
+            cursor.execute(
+                """
+                UPDATE staging.orders_clean
+                SET source_system_code = %s
+                WHERE source_system_code IS NULL;
+                """,
+                (SOURCE_SYSTEM_FILE,),
+            )
+            cursor.execute(
+                """
+                ALTER TABLE staging.orders_clean
+                ALTER COLUMN source_system_code SET NOT NULL;
+                """
+            )
+        backfill_raw_order_occurrence(connection, "raw.orders_raw")
+        backfill_raw_order_occurrence(connection, "raw.orders_app_raw")
 
         raw_customer_cdc = sync_table(
             connection,
@@ -811,7 +1024,14 @@ def main() -> None:
             connection,
             "raw.orders_raw",
             raw_orders_df,
-            key_columns=["order_id", "customer_id", "sku", "order_date", "channel", "source_occurrence"],
+            key_columns=RAW_ORDER_KEY_COLUMNS,
+            all_columns=RAW_ORDER_COLUMNS,
+        )
+        raw_app_order_cdc = sync_table(
+            connection,
+            "raw.orders_app_raw",
+            raw_app_orders_df,
+            key_columns=RAW_ORDER_KEY_COLUMNS,
             all_columns=RAW_ORDER_COLUMNS,
         )
 
@@ -833,7 +1053,7 @@ def main() -> None:
             connection,
             "staging.orders_clean",
             stage_orders_df,
-            key_columns=["order_id", "customer_id", "sku", "order_date", "channel"],
+            key_columns=STAGE_ORDER_KEY_COLUMNS,
             all_columns=list(stage_orders_df.columns),
         )
 
@@ -919,6 +1139,7 @@ def main() -> None:
         "customers_raw": raw_customer_cdc,
         "products_raw": raw_product_cdc,
         "orders_raw": raw_order_cdc,
+        "orders_app_raw": raw_app_order_cdc,
     }
     staging_cdc = {
         "customers_clean": stage_customer_cdc,
@@ -933,29 +1154,30 @@ def main() -> None:
         "fact_order_line": mart_fact_cdc,
     }
 
-    divider("STAGING ACTIONS")
-    print(
-        "customers: "
-        f"kept={customer_stats['rows']} | "
-        f"country->Unknown={customer_stats['country_imputed']} | "
-        f"segment->Unknown={customer_stats['segment_imputed']}"
-    )
-    print(
-        "products: "
-        f"kept={product_stats['rows']} | "
-        f"category->Unknown={product_stats['category_imputed']} | "
-        f"cost_abs_applied={product_stats['negative_cost_corrected']}"
-    )
-    print(
-        "orders: "
-        f"kept={order_stats['rows']} | "
-        f"exact_duplicates_removed={order_stats['exact_duplicates_removed']} | "
-        f"dropped_unit_price={order_stats['dropped_invalid_unit_price']} | "
-        f"dropped_invalid_date={order_stats['dropped_invalid_order_date']} | "
-        f"returns_kept={order_stats['return_rows']}"
-    )
+    if verbose:
+        divider("STAGING ACTIONS")
+        print(
+            "customers: "
+            f"kept={customer_stats['rows']} | "
+            f"country->Unknown={customer_stats['country_imputed']} | "
+            f"segment->Unknown={customer_stats['segment_imputed']}"
+        )
+        print(
+            "products: "
+            f"kept={product_stats['rows']} | "
+            f"category->Unknown={product_stats['category_imputed']} | "
+            f"cost_abs_applied={product_stats['negative_cost_corrected']}"
+        )
+        print(
+            "orders: "
+            f"kept={order_stats['rows']} | "
+            f"exact_duplicates_removed={order_stats['exact_duplicates_removed']} | "
+            f"dropped_unit_price={order_stats['dropped_invalid_unit_price']} | "
+            f"dropped_invalid_date={order_stats['dropped_invalid_order_date']} | "
+            f"returns_kept={order_stats['return_rows']}"
+        )
 
-    divider("CDC SUMMARY")
+        divider("CDC SUMMARY")
     raw_total = total_delta(raw_cdc)
     staging_total = total_delta(staging_cdc)
     mart_total = total_delta(mart_cdc)
@@ -963,36 +1185,48 @@ def main() -> None:
     overall_deletes = raw_total["deleted"] + staging_total["deleted"] + mart_total["deleted"]
     overall_inserts = raw_total["inserted"] + staging_total["inserted"] + mart_total["inserted"]
 
-    if overall_inserts and not overall_updates and not overall_deletes:
-        print(
-            "Load type: initial snapshot load "
-            f"(inserted={overall_inserts}, updated=0, deleted=0)"
-        )
-    elif not overall_inserts and not overall_updates and not overall_deletes:
-        print("Load type: no changes detected")
-    else:
-        print(
-            "Load type: incremental changes "
-            f"(inserted={overall_inserts}, updated={overall_updates}, deleted={overall_deletes})"
-        )
+    if verbose:
+        if overall_inserts and not overall_updates and not overall_deletes:
+            print(
+                "Load type: initial snapshot load "
+                f"(inserted={overall_inserts}, updated=0, deleted=0)"
+            )
+        elif not overall_inserts and not overall_updates and not overall_deletes:
+            print("Load type: no changes detected")
+        else:
+            print(
+                "Load type: incremental changes "
+                f"(inserted={overall_inserts}, updated={overall_updates}, deleted={overall_deletes})"
+            )
 
-    print_cdc_layer("raw", raw_cdc)
-    print_cdc_layer("staging", staging_cdc)
-    print_cdc_layer("mart", mart_cdc)
+        print_cdc_layer("raw", raw_cdc)
+        print_cdc_layer("staging", staging_cdc)
+        print_cdc_layer("mart", mart_cdc)
 
-    if (
-        fact_stats["dropped_missing_customer_refs"]
-        or fact_stats["dropped_missing_product_refs"]
-        or fact_stats["dropped_missing_channel_refs"]
-    ):
-        print(
-            "fact conformance: "
-            f"dropped_missing_customer_refs={fact_stats['dropped_missing_customer_refs']} | "
-            f"dropped_missing_product_refs={fact_stats['dropped_missing_product_refs']} | "
-            f"dropped_missing_channel_refs={fact_stats['dropped_missing_channel_refs']}"
-        )
-    else:
-        print("fact conformance: all staged orders resolved to mart dimensions")
+        if (
+            fact_stats["dropped_missing_customer_refs"]
+            or fact_stats["dropped_missing_product_refs"]
+            or fact_stats["dropped_missing_channel_refs"]
+        ):
+            print(
+                "fact conformance: "
+                f"dropped_missing_customer_refs={fact_stats['dropped_missing_customer_refs']} | "
+                f"dropped_missing_product_refs={fact_stats['dropped_missing_product_refs']} | "
+                f"dropped_missing_channel_refs={fact_stats['dropped_missing_channel_refs']}"
+            )
+        else:
+            print("fact conformance: all staged orders resolved to mart dimensions")
+
+    return {
+        "raw": raw_cdc,
+        "staging": staging_cdc,
+        "mart": mart_cdc,
+        "fact": fact_stats,
+    }
+
+
+def main() -> None:
+    run_incremental_cdc()
 
 
 if __name__ == "__main__":
