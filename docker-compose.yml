@@ -11,6 +11,9 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "${APP_PORT:-8000}:8000"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000

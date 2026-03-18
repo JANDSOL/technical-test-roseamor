@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from scripts.common import load_dataframe
+from scripts.etl_incremental_cdc import run_incremental_cdc
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -228,6 +229,18 @@ def sqlite_row_to_response(row: sqlite3.Row) -> RegisteredOrderResponse:
     )
 
 
+def sqlite_row_to_order_source_row(row: sqlite3.Row) -> dict[str, str]:
+    return {
+        "order_id": row["order_id"],
+        "customer_id": row["customer_id"],
+        "sku": row["sku"],
+        "quantity": str(row["quantity"]),
+        "unit_price": str(row["unit_price"]),
+        "order_date": row["order_date"],
+        "channel": row["channel"],
+    }
+
+
 def order_form_html() -> str:
     return """<!DOCTYPE html>
 <html lang="en">
@@ -353,7 +366,7 @@ def order_form_html() -> str:
   <section class="shell">
     <header class="hero">
       <h1>Register Order</h1>
-      <p>Create a new order directly in SQLite. The API generates the order id automatically, sets the order datetime on the server, and validates customer, sku, quantity, unit price, and channel.</p>
+      <p>Create a new order in SQLite and sync it immediately to PostgreSQL raw, staging, and mart. The API generates the order id automatically, sets the order datetime on the server, and validates customer, sku, quantity, unit price, and channel.</p>
     </header>
     <form id="order-form">
       <label>
@@ -448,7 +461,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Roseamor Orders API",
-    description="Simple FastAPI app to register orders in SQLite.",
+    description="FastAPI app to register orders in SQLite and sync them to PostgreSQL raw, staging, and mart.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -537,6 +550,18 @@ def create_order(payload: OrderCreateRequest) -> OrderCreateResponse:
             ),
         )
         row = cursor.fetchone()
+        try:
+            run_incremental_cdc(
+                additional_order_rows=[sqlite_row_to_order_source_row(row)],
+                verbose=False,
+            )
+        except Exception as exc:
+            connection.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"order could not be synced to PostgreSQL raw/staging/mart layers: {exc}",
+            ) from exc
+
         connection.commit()
 
     return OrderCreateResponse(
