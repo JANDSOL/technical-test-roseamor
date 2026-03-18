@@ -2,7 +2,7 @@
 
 ## Objective
 
-This repository implements the data-analysis scope from [REQUIREMENTS.md](/home/jpas/Projects/technical-test-roseamor/REQUIREMENTS.md): explore the CSV sources, apply data quality rules, load a PostgreSQL warehouse through `raw -> staging -> mart`, and expose a curated model for BI consumption.
+This repository implements the data-analysis scope from [REQUIREMENTS.md](./REQUIREMENTS.md): explore the CSV sources, apply data quality rules, load a PostgreSQL warehouse through `raw -> staging -> mart`, and expose a curated model for BI consumption.
 
 Current implemented deliverables:
 
@@ -119,10 +119,10 @@ Expected cleaned outcomes:
 
 Main analytical artifacts:
 
-- Dashboard files: [dashboards/roseamor_dashboard.pbix](/home/jpas/Projects/technical-test-roseamor/dashboards/roseamor_dashboard.pbix), [dashboards/roseamor_dashboard.pdf](/home/jpas/Projects/technical-test-roseamor/dashboards/roseamor_dashboard.pdf)
-- SQL bootstrap files: [db/init/00_create_schemas.sql](/home/jpas/Projects/technical-test-roseamor/db/init/00_create_schemas.sql), [db/init/01_star_schema.sql](/home/jpas/Projects/technical-test-roseamor/db/init/01_star_schema.sql)
+- Dashboard files: [dashboards/roseamor_dashboard.pbix](./dashboards/roseamor_dashboard.pbix), [dashboards/roseamor_dashboard.pdf](./dashboards/roseamor_dashboard.pdf)
+- SQL bootstrap files: [db/init/00_create_schemas.sql](./db/init/00_create_schemas.sql), [db/init/01_star_schema.sql](./db/init/01_star_schema.sql)
 - EDA outputs: `reports/*_profile.html`
-- DQ output: [reports/great_expectations_results_db.json](/home/jpas/Projects/technical-test-roseamor/reports/great_expectations_results_db.json)
+- DQ output: [reports/great_expectations_results_db.json](./reports/great_expectations_results_db.json)
 
 ## Local Configuration
 
@@ -260,7 +260,7 @@ docker compose exec python python scripts/data_quality.py --staging --mart
 
 Generated artifact:
 
-- [reports/great_expectations_results_db.json](/home/jpas/Projects/technical-test-roseamor/reports/great_expectations_results_db.json)
+- [reports/great_expectations_results_db.json](./reports/great_expectations_results_db.json)
 
 ## Run The Web App
 
@@ -352,8 +352,8 @@ This design keeps the original landing layer, isolates cleaning logic in `stagin
 
 Power BI artifacts included in the repository:
 
-- [dashboards/roseamor_dashboard.pbix](/home/jpas/Projects/technical-test-roseamor/dashboards/roseamor_dashboard.pbix)
-- [dashboards/roseamor_dashboard.pdf](/home/jpas/Projects/technical-test-roseamor/dashboards/roseamor_dashboard.pdf)
+- [dashboards/roseamor_dashboard.pbix](./dashboards/roseamor_dashboard.pbix)
+- [dashboards/roseamor_dashboard.pdf](./dashboards/roseamor_dashboard.pdf)
 
 Expected dashboard consumption layer:
 
@@ -364,8 +364,8 @@ Expected dashboard consumption layer:
 
 PostgreSQL initializes the schemas and tables from:
 
-- [db/init/00_create_schemas.sql](/home/jpas/Projects/technical-test-roseamor/db/init/00_create_schemas.sql)
-- [db/init/01_star_schema.sql](/home/jpas/Projects/technical-test-roseamor/db/init/01_star_schema.sql)
+- [db/init/00_create_schemas.sql](./db/init/00_create_schemas.sql)
+- [db/init/01_star_schema.sql](./db/init/01_star_schema.sql)
 
 These files are mounted in `docker-compose.yml` under `/docker-entrypoint-initdb.d`, so they run automatically only when the PostgreSQL volume is created from scratch.
 
